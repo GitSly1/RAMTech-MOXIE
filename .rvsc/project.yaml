@@ -1,0 +1,29 @@
+schema_version: 1
+project_id: moxie
+product_name: MOXIE
+product_class: product
+priority: P1
+classification: GREENFIELD_REBUILD+LEGACY_REFERENCE
+default_branch: main
+managed_by: GitSly1/RAMTech-RVSC-Control-Center
+routine_development_on_main: false
+historical_reference:
+  product_lineage: AI Intelligence Platform / AI Agent Workflow Analysis
+  reference_build: v1.6.4_WF005
+  protected_implementation_baseline: false
+mission: >-
+  Build an AI Content Intelligence & Growth Automation Platform that discovers
+  emerging content opportunities, understands why they matter, creates original
+  channel-specific content, validates it, publishes through controlled autonomy,
+  measures performance, and continuously improves strategy.
+product_loop:
+  - discover
+  - understand
+  - strategize
+  - create
+  - validate
+  - publish
+  - measure
+  - learn
+  - improve
+resource_preemption: SEMANTIQ_P0
