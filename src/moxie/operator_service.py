@@ -10,6 +10,7 @@ from pathlib import Path
 
 from .durable_queue import DurableHumanApprovalQueue
 from .evidence_quality import EvidenceQualityReport, assess_draft
+from .evidence_registry import EvidenceRegistry
 from .operator_store import OperatorStore
 from .first_slice import (
     ContractError,
@@ -71,6 +72,7 @@ class OperatorService:
         root.mkdir(parents=True, exist_ok=True)
         self.queue = DurableHumanApprovalQueue(root / "approvals.sqlite3")
         self.store = OperatorStore(root / "operator.sqlite3")
+        self.registry = EvidenceRegistry(root / "evidence.sqlite3")
         self.journal = ActivityJournal(root / "activity.jsonl")
         self.workflow = FirstSliceWorkflow(self.queue)
 
@@ -129,6 +131,18 @@ class OperatorService:
     def check_evidence(self, request: OperatorSubmission) -> EvidenceQualityReport:
         ids = (request.evidence_id,) + tuple(row[0] for row in request.extra_evidence)
         return assess_draft(request.brief_body, ids)
+
+    def register_evidence(self, opportunity_id: str, evidence_id: str, source_type: str,
+                          source_ref: str, publication_date: str, excerpt: str) -> None:
+        self.registry.register(opportunity_id, evidence_id, source_type, source_ref, publication_date, excerpt)
+        self.journal.record(opportunity_id, "evidence_registered", ("evidence: " + evidence_id,))
+
+    def attest_evidence(self, opportunity_id: str, evidence_id: str, reviewer: str) -> None:
+        self.registry.verify(opportunity_id, evidence_id, reviewer)
+        self.journal.record(opportunity_id, "evidence_attested", ("evidence: " + evidence_id, "operator: " + reviewer.strip()))
+
+    def evidence_sources(self, opportunity_id: str) -> tuple[dict, ...]:
+        return self.registry.list(opportunity_id)
 
     def reviewed(self) -> tuple[dict, ...]:
         decisions = self.store.decisions()

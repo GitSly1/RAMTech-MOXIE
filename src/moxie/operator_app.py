@@ -33,14 +33,17 @@ class OperatorApp(ttk.Frame):
         self.approvals = ttk.Frame(self.tabs, padding=12)
         self.history = ttk.Frame(self.tabs, padding=12)
         self.completed = ttk.Frame(self.tabs, padding=12)
+        self.sources = ttk.Frame(self.tabs, padding=12)
         self.tabs.add(self.intake, text="Opportunity & Brief")
         self.tabs.add(self.approvals, text="Pending Human Review")
         self.tabs.add(self.history, text="Activity History")
         self.tabs.add(self.completed, text="Completed Reviews")
+        self.tabs.add(self.sources, text="Evidence Sources")
         self._build_intake()
         self._build_approvals()
         self._build_history()
         self._build_completed()
+        self._build_sources()
         self.refresh()
 
     def _build_intake(self) -> None:
@@ -143,6 +146,75 @@ class OperatorApp(ttk.Frame):
         self.completed_detail.pack(fill="both", expand=True)
         self._completed = ()
 
+    def _build_sources(self) -> None:
+        ttk.Label(self.sources, text="Record source provenance for the opportunity shown in Opportunity & Brief. Attestation is an operator statement, not independent verification.", wraplength=910).pack(anchor="w", pady=(0, 10))
+        form = ttk.Frame(self.sources)
+        form.pack(fill="x")
+        fields = (("source_evidence_id", "Evidence ID"), ("source_ref", "Source URL / document path / note reference"),
+                  ("publication_date", "Publication date (YYYY-MM-DD, optional)"),
+                  ("source_excerpt", "Evidence excerpt / finding"), ("source_reviewer", "Attesting operator"))
+        self.source_fields = {}
+        for row, (key, label) in enumerate(fields):
+            ttk.Label(form, text=label).grid(row=row, column=0, sticky="w", padx=(0, 12), pady=5)
+            field = ttk.Entry(form, width=78)
+            field.grid(row=row, column=1, sticky="ew", pady=5)
+            self.source_fields[key] = field
+        form.columnconfigure(1, weight=1)
+        ttk.Label(form, text="Source type").grid(row=len(fields), column=0, sticky="w", pady=5)
+        self.source_type = tk.StringVar(value="Operator note")
+        ttk.Combobox(form, textvariable=self.source_type, values=("URL", "Local document", "Operator note"), state="readonly", width=28).grid(row=len(fields), column=1, sticky="w", pady=5)
+        actions = ttk.Frame(self.sources)
+        actions.pack(fill="x", pady=10)
+        ttk.Button(actions, text="Refresh Opportunity Sources", command=self.refresh_sources).pack(side="left")
+        ttk.Button(actions, text="Register Source", command=self.register_source).pack(side="right", padx=(8, 0))
+        ttk.Button(actions, text="Attest Selected Source", command=self.attest_source).pack(side="right")
+        self.sources_tree = ttk.Treeview(self.sources, columns=("id", "type", "reference", "status", "reviewer"), show="headings", height=12)
+        for key, width in (("id", 130), ("type", 120), ("reference", 310), ("status", 130), ("reviewer", 150)):
+            self.sources_tree.heading(key, text=key.title())
+            self.sources_tree.column(key, width=width)
+        self.sources_tree.pack(fill="both", expand=True)
+        self._sources = ()
+
+    def refresh_sources(self) -> None:
+        opportunity_id = self.fields["opportunity_id"].get().strip()
+        self._sources = self.service.evidence_sources(opportunity_id) if opportunity_id else ()
+        for row in self.sources_tree.get_children():
+            self.sources_tree.delete(row)
+        for i, record in enumerate(self._sources):
+            self.sources_tree.insert("", "end", iid=str(i), values=(
+                record["evidence_id"], record["source_type"], record["source_ref"],
+                "ATTESTED" if record["verified_by"] else "UNVERIFIED", record["verified_by"] or "",
+            ))
+
+    def register_source(self) -> None:
+        try:
+            self.service.register_evidence(
+                self.fields["opportunity_id"].get().strip(),
+                self.source_fields["source_evidence_id"].get().strip(), self.source_type.get(),
+                self.source_fields["source_ref"].get().strip(),
+                self.source_fields["publication_date"].get().strip(),
+                self.source_fields["source_excerpt"].get().strip(),
+            )
+        except (ContractError, OSError, ValueError) as exc:
+            messagebox.showerror("Register Evidence Source", str(exc))
+            return
+        self.refresh_sources()
+
+    def attest_source(self) -> None:
+        selected = self.sources_tree.selection()
+        if not selected:
+            messagebox.showwarning("Evidence Attestation", "Select one registered source.")
+            return
+        record = self._sources[int(selected[0])]
+        if not messagebox.askyesno("Confirm source attestation", "Have you personally checked the source and its recorded excerpt? This attestation is final and does not independently verify truth."):
+            return
+        try:
+            self.service.attest_evidence(record["opportunity_id"], record["evidence_id"], self.source_fields["source_reviewer"].get())
+        except (ContractError, OSError, ValueError) as exc:
+            messagebox.showerror("Evidence Attestation", str(exc))
+            return
+        self.refresh_sources()
+
     def local_draft(self) -> None:
         try:
             request = self._request()
@@ -218,6 +290,14 @@ class OperatorApp(ttk.Frame):
             f"Recognized citations: {report.cited_segments}/{report.checked_segments} draft lines\n\n"
             + ("\n".join(report.issues[:15]) if report.issues else "No missing/unknown citations detected in checked lines.")
             + "\n\n" + report.notice
+        )
+        records = {row["evidence_id"]: row for row in self.service.evidence_sources(request.opportunity_id)}
+        all_ids = (request.evidence_id,) + tuple(row[0] for row in request.extra_evidence)
+        message += "\n\nRegistered source status:\n" + "\n".join(
+            f"[{identifier}] " + (
+                "ATTESTED by " + records[identifier]["verified_by"] if identifier in records and records[identifier]["verified_by"]
+                else "UNVERIFIED (no operator attestation)"
+            ) for identifier in all_ids
         )
         messagebox.showinfo("Evidence Quality", message)
 
