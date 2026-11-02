@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import tkinter as tk
-from tkinter import messagebox, ttk
+from tkinter import filedialog, messagebox, ttk
 
+from .batch_import import import_drafts_csv
 from .first_slice import ContractError
 from .operator_service import OperatorService, OperatorSubmission
 
@@ -69,6 +70,7 @@ class OperatorApp(ttk.Frame):
         self.draft_selector = ttk.Combobox(buttons, textvariable=self.draft_id, state="readonly", width=22)
         self.draft_selector.pack(side="left", padx=5)
         ttk.Button(buttons, text="Load", command=self.load_draft).pack(side="left")
+        ttk.Button(buttons, text="Import CSV", command=self.import_csv).pack(side="left", padx=(8, 0))
         ttk.Button(buttons, text="Save Draft", command=self.save_draft).pack(side="right", padx=(4, 0))
         ttk.Button(buttons, text="Evaluate & Queue for Human Review", command=self.submit).pack(side="right")
         self.outcome = tk.StringVar(value="Complete the fields, then evaluate. No content is published.")
@@ -143,6 +145,25 @@ class OperatorApp(ttk.Frame):
             self.refresh()
         except (ContractError, OSError, ValueError) as exc:
             messagebox.showerror("Save Draft", str(exc))
+
+    def import_csv(self) -> None:
+        selected = filedialog.askopenfilename(
+            title="Import MOXIE opportunity drafts", filetypes=[("CSV files", "*.csv")]
+        )
+        if not selected:
+            return
+        try:
+            report = import_drafts_csv(selected, self.service)
+        except (ContractError, OSError, UnicodeError) as exc:
+            messagebox.showerror("CSV import", str(exc))
+            return
+        self.refresh()
+        summary = f"CSV imported {report.imported} drafts; rejected {report.rejected} rows. No drafts queued or published."
+        self.outcome.set(summary)
+        if report.issues:
+            messagebox.showwarning("CSV import completed", summary + "\n\n" + "\n".join(report.issues[:8]))
+        else:
+            messagebox.showinfo("CSV import completed", summary)
 
     def load_draft(self) -> None:
         found = next((item for item in self.service.drafts() if item.opportunity_id == self.draft_id.get()), None)
