@@ -11,6 +11,7 @@ from pathlib import Path
 from .durable_queue import DurableHumanApprovalQueue
 from .evidence_quality import EvidenceQualityReport, assess_draft
 from .evidence_registry import EvidenceRegistry
+from .content_quality import ContentQuality, consolidate
 from .operator_store import OperatorStore
 from .first_slice import (
     ContractError,
@@ -98,8 +99,17 @@ class OperatorService:
             opportunity, evidence, title=request.brief_title,
             body=request.brief_body, cited_evidence_ids=[item.evidence_id for item in evidence],
         )
+        if result.approval_item is not None:
+            quality = self.content_quality(request)
+            self.store.save_quality_snapshot(result.approval_item.item_id, quality.as_record())
         self.journal.record(opportunity.opportunity_id, result.qa.disposition, result.qa.reasons)
         return result
+
+    def content_quality(self, request: OperatorSubmission) -> ContentQuality:
+        return consolidate(request, self.evidence_sources(request.opportunity_id))
+
+    def quality_snapshot(self, item_id: str) -> dict | None:
+        return self.store.quality_snapshot(item_id)
 
     def pending(self):
         decisions = self.store.decisions()

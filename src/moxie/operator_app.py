@@ -82,6 +82,7 @@ class OperatorApp(ttk.Frame):
         ttk.Button(buttons, text="Versions", command=self.show_versions).pack(side="left", padx=(4, 0))
         ttk.Button(buttons, text="Import CSV", command=self.import_csv).pack(side="left", padx=(8, 0))
         ttk.Button(buttons, text="Check Evidence", command=self.check_evidence).pack(side="left", padx=(8, 0))
+        ttk.Button(buttons, text="Quality Report", command=self.show_quality).pack(side="left", padx=(5, 0))
         self.ai_button = ttk.Button(buttons, text="Local Ollama Draft", command=self.local_draft)
         self.ai_button.pack(side="left", padx=(8, 0))
         ttk.Button(buttons, text="Save Draft", command=self.save_draft).pack(side="right", padx=(4, 0))
@@ -259,11 +260,11 @@ class OperatorApp(ttk.Frame):
     def submit(self) -> None:
         try:
             request = self._request()
-            report = self.service.check_evidence(request)
+            report = self.service.content_quality(request)
             if report.issues:
-                self.service.journal.record(request.opportunity_id, "evidence_check_blocked", report.issues)
-                self.outcome.set("Evidence check found unresolved citations; submit blocked. Use Check Evidence for details.")
-                messagebox.showwarning("Evidence check blocks submission", "\n".join(report.issues[:12]) + "\n\n" + report.notice)
+                self.service.journal.record(request.opportunity_id, "quality_check_blocked", report.issues)
+                self.outcome.set("Content quality requires operator action; submission blocked. Use Quality Report.")
+                messagebox.showwarning("Quality gate blocks submission", "\n".join(report.issues[:12]) + "\n\n" + report.notice)
                 return
             result = self.service.submit(request)
         except (ContractError, OSError, ValueError) as exc:
@@ -276,6 +277,22 @@ class OperatorApp(ttk.Frame):
         else:
             self.outcome.set("Rejected by deterministic QA: " + "; ".join(result.qa.reasons))
         self.refresh()
+
+    def show_quality(self) -> None:
+        try:
+            request = self._request()
+            report = self.service.content_quality(request)
+        except (ContractError, ValueError) as exc:
+            messagebox.showerror("Content Quality", str(exc))
+            return
+        self.service.journal.record(request.opportunity_id, "quality_report", report.issues)
+        message = (
+            f"Status: {report.status}\nCitation coverage: {report.citation_lines}/{report.total_lines} draft lines\n"
+            f"Registered sources: {report.registered}\nOperator-attested sources: {report.attested}\n\n"
+            + ("\n".join(report.issues[:15]) if report.issues else "No unresolved citation/provenance flags detected.")
+            + "\n\n" + report.notice
+        )
+        messagebox.showinfo("Content Quality", message)
 
     def check_evidence(self) -> None:
         try:
@@ -445,7 +462,9 @@ class OperatorApp(ttk.Frame):
         value = (
             f"Decision: {row['decision']}\nReviewer: {row['reviewer']}\n"
             f"Reason: {row['reason']}\nTimestamp: {row['decided_at']}\n"
-            f"Citations: {', '.join(brief.evidence_ids)}\n\n{brief.title}\n\n{brief.body}"
+            f"Citations: {', '.join(brief.evidence_ids)}\n"
+            f"Quality at submission: {self._quality_summary(row['item_id'])}\n\n"
+            f"{brief.title}\n\n{brief.body}"
         )
         self.completed_detail.configure(state="normal")
         self.completed_detail.delete("1.0", "end")
@@ -466,8 +485,15 @@ class OperatorApp(ttk.Frame):
         self._set_detail(
             f"Opportunity: {item.brief.opportunity_id}\n"
             f"Evidence citations: {', '.join(item.brief.evidence_ids)}\n"
-            f"State: {item.state}\n\n{item.brief.title}\n\n{item.brief.body}"
+            f"State: {item.state}\n"
+            f"Quality at submission: {self._quality_summary(item.item_id)}\n\n{item.brief.title}\n\n{item.brief.body}"
         )
+
+    def _quality_summary(self, item_id: str) -> str:
+        report = self.service.quality_snapshot(item_id)
+        if report is None:
+            return "NOT RECORDED (legacy submission)"
+        return f"{report['status']} | citations {report['citation_lines']}/{report['total_lines']} | attested {report['attested']}"
 
 
 def main() -> None:
