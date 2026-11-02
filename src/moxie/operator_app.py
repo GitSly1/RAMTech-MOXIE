@@ -34,16 +34,19 @@ class OperatorApp(ttk.Frame):
         self.history = ttk.Frame(self.tabs, padding=12)
         self.completed = ttk.Frame(self.tabs, padding=12)
         self.sources = ttk.Frame(self.tabs, padding=12)
+        self.claims_tab = ttk.Frame(self.tabs, padding=12)
         self.tabs.add(self.intake, text="Opportunity & Brief")
         self.tabs.add(self.approvals, text="Pending Human Review")
         self.tabs.add(self.history, text="Activity History")
         self.tabs.add(self.completed, text="Completed Reviews")
         self.tabs.add(self.sources, text="Evidence Sources")
+        self.tabs.add(self.claims_tab, text="Claim Review")
         self._build_intake()
         self._build_approvals()
         self._build_history()
         self._build_completed()
         self._build_sources()
+        self._build_claims()
         self.refresh()
 
     def _build_intake(self) -> None:
@@ -175,6 +178,57 @@ class OperatorApp(ttk.Frame):
             self.sources_tree.column(key, width=width)
         self.sources_tree.pack(fill="both", expand=True)
         self._sources = ()
+
+    def _build_claims(self) -> None:
+        ttk.Label(self.claims_tab, text="Review lines from the currently loaded draft. A supported decision means operator-reviewed evidence, not independently proven truth.", wraplength=920).pack(anchor="w", pady=(0, 8))
+        ttk.Button(self.claims_tab, text="Refresh Claims from Draft", command=self.refresh_claims).pack(anchor="e", pady=4)
+        self.claim_tree = ttk.Treeview(self.claims_tab, columns=("line", "claim", "citations", "decision"), show="headings", height=10)
+        for key, width in (("line", 60), ("claim", 520), ("citations", 160), ("decision", 180)):
+            self.claim_tree.heading(key, text=key.title())
+            self.claim_tree.column(key, width=width)
+        self.claim_tree.pack(fill="both", expand=True)
+        details = ttk.Frame(self.claims_tab)
+        details.pack(fill="x", pady=8)
+        ttk.Label(details, text="Reviewer").pack(side="left")
+        self.claim_reviewer = ttk.Entry(details, width=20)
+        self.claim_reviewer.pack(side="left", padx=6)
+        ttk.Label(details, text="Decision").pack(side="left")
+        self.claim_decision = tk.StringVar(value="needs_more_research")
+        ttk.Combobox(details, textvariable=self.claim_decision, values=("supported_by_operator", "unsupported_by_operator", "needs_more_research"), state="readonly", width=28).pack(side="left", padx=6)
+        ttk.Label(self.claims_tab, text="Reason / evidence-review notes").pack(anchor="w")
+        self.claim_reason = ttk.Entry(self.claims_tab)
+        self.claim_reason.pack(fill="x", pady=5)
+        ttk.Button(self.claims_tab, text="Record Claim Decision", command=self.record_claim).pack(anchor="e", pady=6)
+        self._claim_lines = ()
+
+    def refresh_claims(self) -> None:
+        try:
+            self._claim_lines = self.service.claim_lines(self._request())
+        except (ContractError, ValueError) as exc:
+            messagebox.showerror("Claim Review", str(exc))
+            return
+        for row in self.claim_tree.get_children():
+            self.claim_tree.delete(row)
+        for i, (claim, recorded) in enumerate(self._claim_lines):
+            self.claim_tree.insert("", "end", iid=str(i), values=(
+                claim.line_number, claim.text[:115], ", ".join(claim.cited_ids),
+                recorded["decision"] if recorded else "NOT REVIEWED",
+            ))
+
+    def record_claim(self) -> None:
+        selected = self.claim_tree.selection()
+        if not selected:
+            messagebox.showwarning("Claim Review", "Select a claim line first.")
+            return
+        claim = self._claim_lines[int(selected[0])][0]
+        if not messagebox.askyesno("Confirm claim decision", "Record a final operator decision for this exact claim line? Text edits require a new review."):
+            return
+        try:
+            self.service.review_claim(self._request(), claim.claim_id, self.claim_decision.get(), self.claim_reviewer.get(), self.claim_reason.get())
+        except (ContractError, OSError, ValueError) as exc:
+            messagebox.showerror("Claim Review", str(exc))
+            return
+        self.refresh_claims()
 
     def refresh_sources(self) -> None:
         opportunity_id = self.fields["opportunity_id"].get().strip()

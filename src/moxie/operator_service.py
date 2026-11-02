@@ -12,6 +12,7 @@ from .durable_queue import DurableHumanApprovalQueue
 from .evidence_quality import EvidenceQualityReport, assess_draft
 from .evidence_registry import EvidenceRegistry
 from .content_quality import ContentQuality, consolidate
+from .claim_review import ClaimReviewStore, extract_claims
 from .operator_store import OperatorStore
 from .first_slice import (
     ContractError,
@@ -74,6 +75,7 @@ class OperatorService:
         self.queue = DurableHumanApprovalQueue(root / "approvals.sqlite3")
         self.store = OperatorStore(root / "operator.sqlite3")
         self.registry = EvidenceRegistry(root / "evidence.sqlite3")
+        self.claim_store = ClaimReviewStore(root / "claims.sqlite3")
         self.journal = ActivityJournal(root / "activity.jsonl")
         self.workflow = FirstSliceWorkflow(self.queue)
 
@@ -110,6 +112,23 @@ class OperatorService:
 
     def quality_snapshot(self, item_id: str) -> dict | None:
         return self.store.quality_snapshot(item_id)
+
+    def claim_lines(self, request: OperatorSubmission):
+        claims = extract_claims(request.opportunity_id, request.brief_body)
+        decisions = self.claim_store.decisions(claims)
+        return tuple((claim, decisions.get(claim.claim_id)) for claim in claims)
+
+    def review_claim(self, request: OperatorSubmission, claim_id: str,
+                     decision: str, reviewer: str, reason: str) -> None:
+        matches = [claim for claim, _ in self.claim_lines(request) if claim.claim_id == claim_id]
+        if len(matches) != 1:
+            raise ContractError("claim does not match the current draft text")
+        ids = {
+            row["evidence_id"] for row in self.evidence_sources(request.opportunity_id)
+            if row["verified_by"]
+        }
+        self.claim_store.decide(request.opportunity_id, matches[0], decision, reviewer, reason, ids)
+        self.journal.record(request.opportunity_id, "claim_review_" + decision, ("claim: " + claim_id, "operator: " + reviewer.strip()))
 
     def pending(self):
         decisions = self.store.decisions()
