@@ -122,5 +122,13 @@ class OperatorService:
     def summary(self) -> dict[str, int]:
         return {"drafts": len(self.drafts()), "awaiting_review": len(self.pending()), "reviewed": len(self.store.decisions())}
 
+    def reviewed(self) -> tuple[dict, ...]:
+        decisions = self.store.decisions()
+        queued = {item.item_id: item for item in self.queue.pending()}
+        return tuple(
+            {**decision, "brief": queued[item_id].brief}
+            for item_id, decision in decisions.items() if item_id in queued
+        )
+
     def activity(self):
         return self.journal.recent()
