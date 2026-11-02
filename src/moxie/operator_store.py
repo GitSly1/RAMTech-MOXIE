@@ -19,6 +19,7 @@ class OperatorStore:
         with closing(self._connect()) as db, db:
             db.execute("CREATE TABLE IF NOT EXISTS operator_drafts (opportunity_id TEXT PRIMARY KEY, payload TEXT NOT NULL, saved_at TEXT NOT NULL)")
             db.execute("CREATE TABLE IF NOT EXISTS operator_decisions (item_id TEXT PRIMARY KEY, decision TEXT NOT NULL CHECK (decision IN ('approved','rejected')), reviewer TEXT NOT NULL, reason TEXT NOT NULL, decided_at TEXT NOT NULL)")
+            db.execute("CREATE TABLE IF NOT EXISTS draft_versions (version_id INTEGER PRIMARY KEY AUTOINCREMENT, opportunity_id TEXT NOT NULL, payload TEXT NOT NULL, saved_at TEXT NOT NULL)")
 
     def _connect(self) -> sqlite3.Connection:
         return sqlite3.connect(self.path, timeout=5)
@@ -27,11 +28,21 @@ class OperatorStore:
         if not isinstance(request.opportunity_id, str) or not request.opportunity_id.strip():
             raise ContractError("opportunity ID required to save draft")
         stamp = datetime.now(timezone.utc).isoformat()
+        payload = json.dumps(asdict(request), ensure_ascii=False)
         with closing(self._connect()) as db, db:
+            old = db.execute("SELECT payload FROM operator_drafts WHERE opportunity_id = ?", (request.opportunity_id.strip(),)).fetchone()
+            if old is not None and json.loads(old[0]) == json.loads(payload):
+                return
             db.execute(
                 "INSERT INTO operator_drafts VALUES (?, ?, ?) ON CONFLICT(opportunity_id) DO UPDATE SET payload=excluded.payload, saved_at=excluded.saved_at",
-                (request.opportunity_id.strip(), json.dumps(asdict(request), ensure_ascii=False), stamp),
+                (request.opportunity_id.strip(), payload, stamp),
             )
+            db.execute("INSERT INTO draft_versions(opportunity_id,payload,saved_at) VALUES (?,?,?)", (request.opportunity_id.strip(), payload, stamp))
+
+    def draft_versions(self, opportunity_id: str) -> tuple[dict, ...]:
+        with closing(self._connect()) as db, db:
+            rows = db.execute("SELECT version_id,payload,saved_at FROM draft_versions WHERE opportunity_id=? ORDER BY version_id DESC", (opportunity_id,)).fetchall()
+        return tuple(dict(version_id=row[0], payload=json.loads(row[1]), saved_at=row[2]) for row in rows)
 
     def drafts(self) -> tuple[dict, ...]:
         with closing(self._connect()) as db, db:

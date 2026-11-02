@@ -9,7 +9,7 @@ from tkinter import filedialog, messagebox, ttk
 
 from .batch_import import import_drafts_csv
 from .first_slice import ContractError
-from .local_drafter import draft_with_ollama
+from .local_drafter import FORMATS, TONES, draft_with_ollama
 from .operator_service import OperatorService, OperatorSubmission
 
 
@@ -76,6 +76,7 @@ class OperatorApp(ttk.Frame):
         self.draft_selector = ttk.Combobox(buttons, textvariable=self.draft_id, state="readonly", width=22)
         self.draft_selector.pack(side="left", padx=5)
         ttk.Button(buttons, text="Load", command=self.load_draft).pack(side="left")
+        ttk.Button(buttons, text="Versions", command=self.show_versions).pack(side="left", padx=(4, 0))
         ttk.Button(buttons, text="Import CSV", command=self.import_csv).pack(side="left", padx=(8, 0))
         self.ai_button = ttk.Button(buttons, text="Local Ollama Draft", command=self.local_draft)
         self.ai_button.pack(side="left", padx=(8, 0))
@@ -83,6 +84,15 @@ class OperatorApp(ttk.Frame):
         ttk.Button(buttons, text="Evaluate & Queue for Human Review", command=self.submit).pack(side="right")
         self.outcome = tk.StringVar(value="Complete the fields, then evaluate. No content is published.")
         ttk.Label(self.intake, textvariable=self.outcome, wraplength=900).pack(anchor="w")
+        options = ttk.Frame(self.intake)
+        options.pack(fill="x", pady=(3, 0))
+        ttk.Label(options, text="AI output:").pack(side="left")
+        self.ai_format = tk.StringVar(value=FORMATS[0])
+        ttk.Combobox(options, textvariable=self.ai_format, values=FORMATS, state="readonly", width=24).pack(side="left", padx=5)
+        ttk.Label(options, text="Tone:").pack(side="left", padx=(8, 0))
+        self.ai_tone = tk.StringVar(value=TONES[0])
+        ttk.Combobox(options, textvariable=self.ai_tone, values=TONES, state="readonly", width=18).pack(side="left", padx=5)
+        ttk.Label(options, text="AI citations and claims require operator verification.").pack(side="left", padx=8)
 
     def _build_approvals(self) -> None:
         ttk.Button(self.approvals, text="Refresh", command=self.refresh).pack(anchor="e", pady=(0, 8))
@@ -146,9 +156,10 @@ class OperatorApp(ttk.Frame):
         self.ai_button.configure(state="disabled")
         self.outcome.set("Local Ollama drafting in progress (one request, up to 65 seconds)...")
         self._ai_results: queue.Queue = queue.Queue(maxsize=1)
+        selected_format, selected_tone = self.ai_format.get(), self.ai_tone.get()
         def worker():
             try:
-                self._ai_results.put((True, draft_with_ollama(request.topic, request.audience, evidence)))
+                self._ai_results.put((True, draft_with_ollama(request.topic, request.audience, evidence, content_format=selected_format, tone=selected_tone)))
             except Exception as exc:
                 self._ai_results.put((False, str(exc)))
         threading.Thread(target=worker, daemon=True).start()
@@ -238,6 +249,48 @@ class OperatorApp(ttk.Frame):
         self.additional.delete("1.0", "end")
         self.additional.insert("1.0", "\n".join(" | ".join(row) for row in found.extra_evidence))
         self.outcome.set("Draft restored; review its fields before evaluation.")
+
+    def show_versions(self) -> None:
+        opportunity_id = self.draft_id.get() or self.fields["opportunity_id"].get().strip()
+        versions = self.service.draft_versions(opportunity_id)
+        if not versions:
+            messagebox.showinfo("Draft Versions", "No saved versions for this opportunity.")
+            return
+        popup = tk.Toplevel(self)
+        popup.title("Saved Draft Versions — " + opportunity_id)
+        popup.geometry("770x490")
+        ttk.Label(popup, text="Select a saved version (read-only until restored):").pack(anchor="w", padx=12, pady=8)
+        selector = ttk.Combobox(popup, state="readonly", values=[f"{row['version_id']} | {row['saved_at']}" for row in versions], width=64)
+        selector.pack(fill="x", padx=12)
+        preview = tk.Text(popup, wrap="word", state="disabled")
+        preview.pack(fill="both", expand=True, padx=12, pady=8)
+        def display(_event=None):
+            if selector.current() < 0:
+                return
+            record = versions[selector.current()]["payload"]
+            preview.configure(state="normal")
+            preview.delete("1.0", "end")
+            preview.insert("1.0", record["brief_body"])
+            preview.configure(state="disabled")
+        selector.bind("<<ComboboxSelected>>", display)
+        selector.current(0)
+        display()
+        def restore():
+            if selector.current() < 0:
+                return
+            record = versions[selector.current()]["payload"]
+            if not messagebox.askyesno("Restore version", "Load this earlier version into the form? Save Draft to retain the change.", parent=popup):
+                return
+            for key, entry in self.fields.items():
+                entry.delete(0, "end")
+                entry.insert(0, record[key])
+            self.body.delete("1.0", "end")
+            self.body.insert("1.0", record["brief_body"])
+            self.additional.delete("1.0", "end")
+            self.additional.insert("1.0", "\n".join(" | ".join(row) for row in record.get("extra_evidence", ())))
+            self.outcome.set("Earlier draft version restored to editor; click Save Draft to preserve it.")
+            popup.destroy()
+        ttk.Button(popup, text="Restore to Editor", command=restore).pack(anchor="e", padx=12, pady=(0, 10))
 
     def review(self, decision: str) -> None:
         selected = self.approval_tree.selection()

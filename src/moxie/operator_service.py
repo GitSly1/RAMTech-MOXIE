@@ -114,6 +114,9 @@ class OperatorService:
             for row in self.store.drafts()
         )
 
+    def draft_versions(self, opportunity_id: str) -> tuple[dict, ...]:
+        return self.store.draft_versions(opportunity_id)
+
     def review(self, item_id: str, decision: str, reviewer: str, reason: str) -> None:
         valid = {item.item_id for item in self.queue.pending()}
         self.store.decide(item_id, decision, reviewer, reason, valid)
