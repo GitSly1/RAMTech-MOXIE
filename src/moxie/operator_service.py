@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .durable_queue import DurableHumanApprovalQueue
+from .operator_store import OperatorStore
 from .first_slice import (
     ContractError,
     FirstSliceResult,
@@ -34,6 +35,7 @@ class OperatorSubmission:
     evidence_finding: str
     brief_title: str
     brief_body: str
+    extra_evidence: tuple[tuple[str, str, str], ...] = ()
 
 
 class ActivityJournal:
@@ -67,6 +69,7 @@ class OperatorService:
         root = Path(directory) if directory is not None else default_data_directory()
         root.mkdir(parents=True, exist_ok=True)
         self.queue = DurableHumanApprovalQueue(root / "approvals.sqlite3")
+        self.store = OperatorStore(root / "operator.sqlite3")
         self.journal = ActivityJournal(root / "activity.jsonl")
         self.workflow = FirstSliceWorkflow(self.queue)
 
@@ -77,22 +80,47 @@ class OperatorService:
             opportunity = TrendOpportunity(
                 request.opportunity_id, request.topic, request.audience, request.signal_source
             )
-            evidence = ResearchEvidence(
+            evidence = [ResearchEvidence(
                 request.evidence_id, opportunity.opportunity_id,
                 request.evidence_source, request.evidence_finding,
+            )]
+            evidence.extend(
+                ResearchEvidence(identifier, opportunity.opportunity_id, source, finding)
+                for identifier, source, finding in request.extra_evidence
             )
         except ContractError as exc:
             self.journal.record(str(request.opportunity_id), "invalid", (str(exc),))
             raise
         result = self.workflow.execute(
-            opportunity, [evidence], title=request.brief_title,
-            body=request.brief_body, cited_evidence_ids=[evidence.evidence_id],
+            opportunity, evidence, title=request.brief_title,
+            body=request.brief_body, cited_evidence_ids=[item.evidence_id for item in evidence],
         )
         self.journal.record(opportunity.opportunity_id, result.qa.disposition, result.qa.reasons)
         return result
 
     def pending(self):
-        return self.queue.pending()
+        decisions = self.store.decisions()
+        return tuple(item for item in self.queue.pending() if item.item_id not in decisions)
+
+    def save_draft(self, request: OperatorSubmission) -> None:
+        if not isinstance(request, OperatorSubmission):
+            raise ContractError("invalid operator draft")
+        self.store.save_draft(request)
+        self.journal.record(request.opportunity_id, "draft_saved", ())
+
+    def drafts(self) -> tuple[OperatorSubmission, ...]:
+        return tuple(
+            OperatorSubmission(**{**row, "extra_evidence": tuple(tuple(x) for x in row.get("extra_evidence", ()))})
+            for row in self.store.drafts()
+        )
+
+    def review(self, item_id: str, decision: str, reviewer: str, reason: str) -> None:
+        valid = {item.item_id for item in self.queue.pending()}
+        self.store.decide(item_id, decision, reviewer, reason, valid)
+        self.journal.record(item_id, "human_" + decision, ("reviewer: " + reviewer.strip(), "reason: " + reason.strip()))
+
+    def summary(self) -> dict[str, int]:
+        return {"drafts": len(self.drafts()), "awaiting_review": len(self.pending()), "reviewed": len(self.store.decisions())}
 
     def activity(self):
         return self.journal.recent()

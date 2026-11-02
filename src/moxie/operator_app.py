@@ -21,6 +21,8 @@ class OperatorApp(ttk.Frame):
             self,
             text="Local-only • Deterministic QA • Human approval pending • No publishing capability",
         ).pack(anchor="w", pady=(1, 12))
+        self.summary_var = tk.StringVar(value="")
+        ttk.Label(self, textvariable=self.summary_var, font=("Segoe UI", 10, "bold")).pack(anchor="w", pady=(0, 8))
         self.tabs = ttk.Notebook(self)
         self.tabs.pack(fill="both", expand=True)
         self.intake = ttk.Frame(self.tabs, padding=12)
@@ -54,12 +56,21 @@ class OperatorApp(ttk.Frame):
             entry.grid(row=row, column=1, sticky="ew", pady=4)
             self.fields[key] = entry
         form.columnconfigure(1, weight=1)
+        ttk.Label(self.intake, text="Additional evidence (optional): one line per record, ID | Source | Finding").pack(anchor="w", pady=(6, 2))
+        self.additional = tk.Text(self.intake, height=3, wrap="none")
+        self.additional.pack(fill="x")
         ttk.Label(self.intake, text="Draft body").pack(anchor="w", pady=(10, 3))
-        self.body = tk.Text(self.intake, height=9, wrap="word")
+        self.body = tk.Text(self.intake, height=5, wrap="word")
         self.body.pack(fill="both", expand=True)
-        ttk.Button(self.intake, text="Evaluate & Queue for Human Review", command=self.submit).pack(
-            anchor="e", pady=(10, 4)
-        )
+        buttons = ttk.Frame(self.intake)
+        buttons.pack(fill="x", pady=(8, 4))
+        ttk.Label(buttons, text="Saved draft:").pack(side="left")
+        self.draft_id = tk.StringVar()
+        self.draft_selector = ttk.Combobox(buttons, textvariable=self.draft_id, state="readonly", width=22)
+        self.draft_selector.pack(side="left", padx=5)
+        ttk.Button(buttons, text="Load", command=self.load_draft).pack(side="left")
+        ttk.Button(buttons, text="Save Draft", command=self.save_draft).pack(side="right", padx=(4, 0))
+        ttk.Button(buttons, text="Evaluate & Queue for Human Review", command=self.submit).pack(side="right")
         self.outcome = tk.StringVar(value="Complete the fields, then evaluate. No content is published.")
         ttk.Label(self.intake, textvariable=self.outcome, wraplength=900).pack(anchor="w")
 
@@ -73,6 +84,16 @@ class OperatorApp(ttk.Frame):
             self.approval_tree.column(name, width=width)
         self.approval_tree.pack(fill="both", expand=True)
         self.approval_tree.bind("<<TreeviewSelect>>", self._show_selected)
+        controls = ttk.Frame(self.approvals)
+        controls.pack(fill="x", pady=(8, 0))
+        ttk.Label(controls, text="Reviewer:").pack(side="left")
+        self.reviewer = ttk.Entry(controls, width=19)
+        self.reviewer.pack(side="left", padx=4)
+        ttk.Label(controls, text="Reason:").pack(side="left")
+        self.review_reason = ttk.Entry(controls, width=44)
+        self.review_reason.pack(side="left", padx=4, fill="x", expand=True)
+        ttk.Button(controls, text="Approve", command=lambda: self.review("approved")).pack(side="left", padx=4)
+        ttk.Button(controls, text="Reject", command=lambda: self.review("rejected")).pack(side="left")
         ttk.Label(self.approvals, text="Selected brief (read-only)").pack(anchor="w", pady=(8, 3))
         self.detail = tk.Text(self.approvals, height=9, state="disabled", wrap="word")
         self.detail.pack(fill="both", expand=True)
@@ -89,9 +110,8 @@ class OperatorApp(ttk.Frame):
         self.history_tree.pack(fill="both", expand=True)
 
     def submit(self) -> None:
-        values = {key: entry.get().strip() for key, entry in self.fields.items()}
-        request = OperatorSubmission(**values, brief_body=self.body.get("1.0", "end-1c"))
         try:
+            request = self._request()
             result = self.service.submit(request)
         except (ContractError, OSError, ValueError) as exc:
             self.outcome.set(f"Not queued: {exc}")
@@ -104,7 +124,59 @@ class OperatorApp(ttk.Frame):
             self.outcome.set("Rejected by deterministic QA: " + "; ".join(result.qa.reasons))
         self.refresh()
 
+    def _request(self) -> OperatorSubmission:
+        values = {key: entry.get().strip() for key, entry in self.fields.items()}
+        extra = []
+        for line_number, line in enumerate(self.additional.get("1.0", "end-1c").splitlines(), 1):
+            if not line.strip():
+                continue
+            parts = tuple(part.strip() for part in line.split("|", 2))
+            if len(parts) != 3 or not all(parts):
+                raise ContractError(f"additional evidence line {line_number} requires ID | Source | Finding")
+            extra.append(parts)
+        return OperatorSubmission(**values, brief_body=self.body.get("1.0", "end-1c"), extra_evidence=tuple(extra))
+
+    def save_draft(self) -> None:
+        try:
+            self.service.save_draft(self._request())
+            self.outcome.set("Draft saved locally. You can reopen it after restarting MOXIE.")
+            self.refresh()
+        except (ContractError, OSError, ValueError) as exc:
+            messagebox.showerror("Save Draft", str(exc))
+
+    def load_draft(self) -> None:
+        found = next((item for item in self.service.drafts() if item.opportunity_id == self.draft_id.get()), None)
+        if found is None:
+            return
+        for key, entry in self.fields.items():
+            entry.delete(0, "end")
+            entry.insert(0, getattr(found, key))
+        self.body.delete("1.0", "end")
+        self.body.insert("1.0", found.brief_body)
+        self.additional.delete("1.0", "end")
+        self.additional.insert("1.0", "\n".join(" | ".join(row) for row in found.extra_evidence))
+        self.outcome.set("Draft restored; review its fields before evaluation.")
+
+    def review(self, decision: str) -> None:
+        selected = self.approval_tree.selection()
+        if not selected:
+            messagebox.showwarning("Human Review", "Select a pending brief first.")
+            return
+        item = self._pending[int(selected[0])]
+        if not messagebox.askyesno("Confirm decision", f"Record {decision} for {item.item_id}? This decision is final and does not publish content."):
+            return
+        try:
+            self.service.review(item.item_id, decision, self.reviewer.get(), self.review_reason.get())
+        except (ContractError, OSError, ValueError) as exc:
+            messagebox.showerror("Human Review", str(exc))
+            return
+        self.review_reason.delete(0, "end")
+        self.refresh()
+
     def refresh(self) -> None:
+        summary = self.service.summary()
+        self.summary_var.set(f"Saved drafts: {summary['drafts']}    Awaiting human review: {summary['awaiting_review']}    Reviewed: {summary['reviewed']}")
+        self.draft_selector.configure(values=[item.opportunity_id for item in self.service.drafts()])
         self._pending = self.service.pending()
         for item in self.approval_tree.get_children():
             self.approval_tree.delete(item)
