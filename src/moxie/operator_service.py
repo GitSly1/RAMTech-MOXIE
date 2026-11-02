@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .durable_queue import DurableHumanApprovalQueue
+from .evidence_quality import EvidenceQualityReport, assess_draft
 from .operator_store import OperatorStore
 from .first_slice import (
     ContractError,
@@ -124,6 +125,10 @@ class OperatorService:
 
     def summary(self) -> dict[str, int]:
         return {"drafts": len(self.drafts()), "awaiting_review": len(self.pending()), "reviewed": len(self.store.decisions())}
+
+    def check_evidence(self, request: OperatorSubmission) -> EvidenceQualityReport:
+        ids = (request.evidence_id,) + tuple(row[0] for row in request.extra_evidence)
+        return assess_draft(request.brief_body, ids)
 
     def reviewed(self) -> tuple[dict, ...]:
         decisions = self.store.decisions()

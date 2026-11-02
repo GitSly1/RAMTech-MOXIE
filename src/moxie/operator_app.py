@@ -78,6 +78,7 @@ class OperatorApp(ttk.Frame):
         ttk.Button(buttons, text="Load", command=self.load_draft).pack(side="left")
         ttk.Button(buttons, text="Versions", command=self.show_versions).pack(side="left", padx=(4, 0))
         ttk.Button(buttons, text="Import CSV", command=self.import_csv).pack(side="left", padx=(8, 0))
+        ttk.Button(buttons, text="Check Evidence", command=self.check_evidence).pack(side="left", padx=(8, 0))
         self.ai_button = ttk.Button(buttons, text="Local Ollama Draft", command=self.local_draft)
         self.ai_button.pack(side="left", padx=(8, 0))
         ttk.Button(buttons, text="Save Draft", command=self.save_draft).pack(side="right", padx=(4, 0))
@@ -186,6 +187,12 @@ class OperatorApp(ttk.Frame):
     def submit(self) -> None:
         try:
             request = self._request()
+            report = self.service.check_evidence(request)
+            if report.issues:
+                self.service.journal.record(request.opportunity_id, "evidence_check_blocked", report.issues)
+                self.outcome.set("Evidence check found unresolved citations; submit blocked. Use Check Evidence for details.")
+                messagebox.showwarning("Evidence check blocks submission", "\n".join(report.issues[:12]) + "\n\n" + report.notice)
+                return
             result = self.service.submit(request)
         except (ContractError, OSError, ValueError) as exc:
             self.outcome.set(f"Not queued: {exc}")
@@ -197,6 +204,22 @@ class OperatorApp(ttk.Frame):
         else:
             self.outcome.set("Rejected by deterministic QA: " + "; ".join(result.qa.reasons))
         self.refresh()
+
+    def check_evidence(self) -> None:
+        try:
+            request = self._request()
+            report = self.service.check_evidence(request)
+        except (ContractError, ValueError) as exc:
+            messagebox.showerror("Evidence Quality", str(exc))
+            return
+        self.service.journal.record(request.opportunity_id, "evidence_check", report.issues)
+        message = (
+            f"Status: {report.status}\n"
+            f"Recognized citations: {report.cited_segments}/{report.checked_segments} draft lines\n\n"
+            + ("\n".join(report.issues[:15]) if report.issues else "No missing/unknown citations detected in checked lines.")
+            + "\n\n" + report.notice
+        )
+        messagebox.showinfo("Evidence Quality", message)
 
     def _request(self) -> OperatorSubmission:
         values = {key: entry.get().strip() for key, entry in self.fields.items()}
