@@ -4,9 +4,11 @@ from .first_slice import (
     FirstSliceWorkflow, HumanApprovalQueue, QAResult,
     ResearchEvidence, TrendOpportunity,
 )
+from .durable_queue import DurableHumanApprovalQueue
 
 __all__ = [
     "ApprovalItem", "ContentBrief", "ContractError", "FirstSliceResult",
     "FirstSliceWorkflow", "HumanApprovalQueue", "QAResult",
     "ResearchEvidence", "TrendOpportunity",
+    "DurableHumanApprovalQueue",
 ]
